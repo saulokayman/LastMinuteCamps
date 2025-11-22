@@ -1,361 +1,344 @@
-import { useState, useEffect } from 'react';
-import { SearchFilters } from './components/SearchFilters';
-import { CampsiteList } from './components/CampsiteList';
-import { NewlyAvailableSites } from './components/NewlyAvailableSites';
-import { PopularSites } from './components/PopularSites';
-import { FeaturedParks } from './components/FeaturedParks';
-import { CampsiteMap } from './components/CampsiteMap';
-import { AdUnit } from './components/AdUnit';
-import { ApiTest } from './components/ApiTest';
-import { ApiDebugger } from './components/ApiDebugger';
-import { UserAuth } from './components/UserAuth';
-import { UserFavorites } from './components/UserFavorites';
-import { UserAlerts } from './components/UserAlerts';
-import { UserRatings } from './components/UserRatings';
-import { UserSettings } from './components/UserSettings';
-import { AdminPanel } from './components/AdminPanel';
-import { PromoteAdmin } from './components/PromoteAdmin';
-import { projectId, publicAnonKey } from './utils/supabase/info';
+import { useState, useEffect } from 'react'
+import { Home, Heart, Settings, LogIn, LogOut, Menu, X, Shield } from 'lucide-react'
+import { getSupabaseClient } from './utils/supabase/client.tsx'
+import { AuthModal } from './components/AuthModal'
+import { HomePage } from './components/HomePage'
+import { FavoritesPage } from './components/FavoritesPage'
+import { AdminPanel } from './components/AdminPanel'
+import { AdminBootstrap } from './components/AdminBootstrap'
+import { AdBanner } from './components/AdBanner'
+import { projectId, publicAnonKey } from './utils/supabase/info.tsx'
 
-export interface Campsite {
-  CampsiteID?: string;
-  FacilityID?: string;
-  CampsiteName?: string;
-  CampsiteType?: string;
-  TypeOfUse?: string;
-  Loop?: string;
-  CampsiteAccessible?: boolean;
-  CampsiteReservable?: boolean;
-  CampsiteLatitude?: number;
-  CampsiteLongitude?: number;
-  ATTRIBUTES?: Array<{
-    AttributeName?: string;
-    AttributeValue?: string;
-  }>;
-  PERMITTEDEQUIPMENT?: Array<{
-    EquipmentName?: string;
-    MaxLength?: number;
-  }>;
-  becameAvailableAt?: string;
-  source?: 'recreation.gov' | 'reservecalifornia.com';
-  facilityName?: string;
-  state?: string;
-  pricePerNight?: number;
-  availableDays?: number;
-  hasPhotos?: boolean;
-  photoCount?: number;
-  reviews?: Array<{
-    rating: number;
-    text: string;
-    source: string;
-  }>;
-}
+type Page = 'home' | 'favorites' | 'admin' | 'bootstrap'
 
-export interface SearchFilters {
-  query: string;
-  state: string;
-  activityType: string;
-  source: 'all' | 'recreation.gov' | 'reservecalifornia.com';
-  startDate: string;
-  endDate: string;
-  accessible?: boolean;
-}
+function App() {
+  const [currentPage, setCurrentPage] = useState<Page>('home')
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin')
+  const [user, setUser] = useState<any>(null)
+  const [accessToken, setAccessToken] = useState<string | null>(null)
+  const [userProfile, setUserProfile] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
 
-export default function App() {
-  const [currentPath, setCurrentPath] = useState(window.location.pathname);
-  const [campsites, setCampsites] = useState<Campsite[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [filters, setFilters] = useState<SearchFilters>({
-    query: '',
-    state: '',
-    activityType: '',
-    source: 'all',
-    startDate: '',
-    endDate: '',
-  });
+  const supabase = getSupabaseClient()
 
-  // Listen for URL changes
   useEffect(() => {
-    const handleLocationChange = () => {
-      setCurrentPath(window.location.pathname);
-    };
+    checkSession()
+  }, [])
 
-    window.addEventListener('popstate', handleLocationChange);
-    return () => window.removeEventListener('popstate', handleLocationChange);
-  }, []);
-
-  // Detect user location on mount (only for homepage)
   useEffect(() => {
-    if (currentPath === '/') {
-      detectUserLocation();
-      trackPageView();
+    if (user) {
+      loadUserProfile()
     }
-  }, [currentPath]);
+  }, [user])
 
-  const trackPageView = async () => {
+  const checkSession = async () => {
     try {
-      await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/track-pageview`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${publicAnonKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          page: window.location.pathname,
-          referrer: document.referrer || 'direct',
-          userAgent: navigator.userAgent,
-        }),
-      });
-    } catch (err) {
-      console.error('Error tracking pageview:', err);
-    }
-  };
-
-  const detectUserLocation = async () => {
-    if ('geolocation' in navigator) {
-      try {
-        const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            timeout: 10000,
-            enableHighAccuracy: false,
-          });
-        });
-
-        const { latitude, longitude } = position.coords;
-
-        // Use reverse geocoding to get state
-        const response = await fetch(
-          `https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}&zoom=10&addressdetails=1`,
-          {
-            headers: {
-              'User-Agent': 'CampFinder-App',
-            },
-          }
-        );
-
-        if (response.ok) {
-          const data = await response.json();
-          const stateCode = data.address?.['ISO3166-2-lvl4']?.split('-')[1] || data.address?.state_code;
-          
-          if (stateCode) {
-            setFilters(prev => ({ ...prev, state: stateCode }));
-            console.log('User location detected:', stateCode);
-          }
-        }
-      } catch (error) {
-        console.log('Geolocation not available or denied:', error);
-        // Silently fail - user can manually select state
+      const { data: { session }, error } = await supabase.auth.getSession()
+      
+      if (session?.user) {
+        setUser(session.user)
+        setAccessToken(session.access_token)
       }
+    } catch (error) {
+      console.error('Session check error:', error)
+    } finally {
+      setLoading(false)
     }
-  };
+  }
 
-  const searchCampsites = async () => {
-    setLoading(true);
-    setError(null);
+  const loadUserProfile = async () => {
+    if (!accessToken) return
 
     try {
-      const params = new URLSearchParams();
-      if (filters.query) params.append('query', filters.query);
-      if (filters.state) params.append('state', filters.state);
-      if (filters.activityType) params.append('activityType', filters.activityType);
-      params.append('source', filters.source);
-      if (filters.startDate) params.append('startDate', filters.startDate);
-      if (filters.endDate) params.append('endDate', filters.endDate);
-      if (filters.accessible) params.append('accessible', 'true');
-
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/search?${params}`,
+        `https://${projectId}.supabase.co/functions/v1/make-server-2b623195/profile`,
         {
-          headers: { 'Authorization': `Bearer ${publicAnonKey}` },
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+          },
         }
-      );
+      )
 
       if (response.ok) {
-        const data = await response.json();
-        setCampsites(data.campsites || []);
-      } else {
-        const errorData = await response.json();
-        setError(errorData.error || 'Failed to search campsites');
-        console.error('Search error:', errorData);
+        const data = await response.json()
+        setUserProfile(data.profile)
       }
-    } catch (err) {
-      setError('An error occurred while searching');
-      console.error('Search error:', err);
-    } finally {
-      setLoading(false);
+    } catch (error) {
+      console.error('Error loading profile:', error)
     }
-  };
+  }
 
-  const trackSiteView = async (site: Campsite) => {
-    try {
-      await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/track-view`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${publicAnonKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          siteId: site.CampsiteID,
-          siteName: site.CampsiteName,
-        }),
-      });
-    } catch (err) {
-      console.error('Error tracking view:', err);
+  const handleAuthSuccess = (authUser: any) => {
+    setUser(authUser)
+    setShowAuthModal(false)
+    // Reload to get fresh session
+    window.location.reload()
+  }
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    setUser(null)
+    setUserProfile(null)
+    setAccessToken(null)
+    setCurrentPage('home')
+  }
+
+  const navigateTo = (page: Page) => {
+    if ((page === 'favorites' || page === 'admin') && !user) {
+      setShowAuthModal(true)
+      return
     }
-  };
 
-  // Route handling - render different pages based on path
-  if (currentPath === '/favorites') {
-    return <UserFavorites />;
+    if (page === 'admin' && !userProfile?.isAdmin) {
+      alert('Admin access required')
+      return
+    }
+
+    setCurrentPage(page)
+    setShowMobileMenu(false)
   }
-  if (currentPath === '/alerts') {
-    return <UserAlerts />;
-  }
-  if (currentPath === '/ratings') {
-    return <UserRatings />;
-  }
-  if (currentPath === '/settings') {
-    return <UserSettings />;
-  }
-  if (currentPath === '/admin') {
-    return <AdminPanel />;
-  }
-  if (currentPath === '/promote-admin') {
-    return <PromoteAdmin />;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-green-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading LastMinuteCamps...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-green-700 text-white shadow-lg">
-        <div className="max-w-7xl mx-auto px-4 py-6">
+      <header className="bg-white border-b border-gray-200 sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-white">CampFinder</h1>
-              <p className="text-green-100">Find and book your perfect campsite</p>
-            </div>
-            <UserAuth />
+            {/* Logo */}
+            <button
+              onClick={() => navigateTo('home')}
+              className="flex items-center gap-2"
+            >
+              <div className="w-10 h-10 bg-gradient-to-br from-green-600 to-green-700 rounded-lg flex items-center justify-center shadow-lg">
+                <Home className="w-5 h-5 text-white" />
+              </div>
+              <h1 className="text-xl">LastMinuteCamps</h1>
+            </button>
+
+            {/* Desktop Navigation */}
+            <nav className="hidden md:flex items-center gap-4">
+              <button
+                onClick={() => navigateTo('home')}
+                className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                  currentPage === 'home'
+                    ? 'bg-green-50 text-green-600'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                <Home className="w-4 h-4" />
+                Home
+              </button>
+
+              <button
+                onClick={() => navigateTo('favorites')}
+                className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                  currentPage === 'favorites'
+                    ? 'bg-green-50 text-green-600'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                <Heart className="w-4 h-4" />
+                Favorites
+                {userProfile?.favorites?.length > 0 && (
+                  <span className="px-2 py-0.5 bg-red-100 text-red-600 text-xs rounded-full">
+                    {userProfile.favorites.length}
+                  </span>
+                )}
+              </button>
+
+              {userProfile?.isAdmin && (
+                <button
+                  onClick={() => navigateTo('admin')}
+                  className={`px-4 py-2 rounded-lg flex items-center gap-2 ${
+                    currentPage === 'admin'
+                      ? 'bg-green-50 text-green-600'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <Settings className="w-4 h-4" />
+                  Admin
+                </button>
+              )}
+
+              {user ? (
+                <div className="flex items-center gap-3 ml-4 pl-4 border-l border-gray-200">
+                  <span className="text-sm text-gray-600">
+                    {user.email}
+                  </span>
+                  <button
+                    onClick={handleLogout}
+                    className="px-4 py-2 text-red-600 hover:bg-red-50 rounded-lg flex items-center gap-2"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    Logout
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setShowAuthModal(true)}
+                  className="ml-4 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-2"
+                >
+                  <LogIn className="w-4 h-4" />
+                  Login
+                </button>
+              )}
+            </nav>
+
+            {/* Mobile Menu Button */}
+            <button
+              onClick={() => setShowMobileMenu(!showMobileMenu)}
+              className="md:hidden p-2 hover:bg-gray-100 rounded-lg"
+            >
+              {showMobileMenu ? (
+                <X className="w-6 h-6" />
+              ) : (
+                <Menu className="w-6 h-6" />
+              )}
+            </button>
           </div>
+
+          {/* Mobile Navigation */}
+          {showMobileMenu && (
+            <nav className="md:hidden mt-4 pt-4 border-t border-gray-200 space-y-2">
+              <button
+                onClick={() => navigateTo('home')}
+                className={`w-full px-4 py-3 rounded-lg flex items-center gap-3 ${
+                  currentPage === 'home'
+                    ? 'bg-green-50 text-green-600'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                <Home className="w-5 h-5" />
+                Home
+              </button>
+
+              <button
+                onClick={() => navigateTo('favorites')}
+                className={`w-full px-4 py-3 rounded-lg flex items-center gap-3 ${
+                  currentPage === 'favorites'
+                    ? 'bg-green-50 text-green-600'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                <Heart className="w-5 h-5" />
+                Favorites
+                {userProfile?.favorites?.length > 0 && (
+                  <span className="px-2 py-0.5 bg-red-100 text-red-600 text-xs rounded-full ml-auto">
+                    {userProfile.favorites.length}
+                  </span>
+                )}
+              </button>
+
+              {userProfile?.isAdmin && (
+                <button
+                  onClick={() => navigateTo('admin')}
+                  className={`w-full px-4 py-3 rounded-lg flex items-center gap-3 ${
+                    currentPage === 'admin'
+                      ? 'bg-green-50 text-green-600'
+                      : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <Settings className="w-5 h-5" />
+                  Admin
+                </button>
+              )}
+
+              {user ? (
+                <div className="pt-4 border-t border-gray-200">
+                  <div className="px-4 py-2 text-sm text-gray-600 mb-2">
+                    {user.email}
+                  </div>
+                  <button
+                    onClick={handleLogout}
+                    className="w-full px-4 py-3 text-red-600 hover:bg-red-50 rounded-lg flex items-center gap-3"
+                  >
+                    <LogOut className="w-5 h-5" />
+                    Logout
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => {
+                    setShowAuthModal(true)
+                    setShowMobileMenu(false)
+                  }}
+                  className="w-full px-4 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 flex items-center gap-3"
+                >
+                  <LogIn className="w-5 h-5" />
+                  Login
+                </button>
+              )}
+            </nav>
+          )}
         </div>
       </header>
 
-      <div className="max-w-7xl mx-auto px-4 py-8">
-        {/* Top Ad Unit */}
-        <AdUnit type="google" format="horizontal" className="mb-8" />
-
-        {/* API Connection Test */}
-        <div className="mb-8">
-          <ApiTest />
-        </div>
-
-        {/* API Debugger */}
-        <div className="mb-8">
-          <ApiDebugger />
-        </div>
-
-        {/* Search Filters */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-8">
-          <SearchFilters
-            filters={filters}
-            onFiltersChange={setFilters}
-            onSearch={searchCampsites}
-            loading={loading}
-          />
-        </div>
-
-        {/* Error Display */}
-        {error && (
-          <div className="bg-red-50 border border-red-200 text-red-800 rounded-lg p-4 mb-8">
-            <p>{error}</p>
-          </div>
+      {/* Main Content */}
+      <main className="py-8">
+        {currentPage === 'home' && (
+          <HomePage accessToken={accessToken} userProfile={userProfile} />
         )}
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Main Content */}
-          <div className="lg:col-span-2 space-y-8">
-            {/* Featured Parks */}
-            <FeaturedParks onParkView={(park) => console.log('Viewing park:', park)} />
-
-            {/* Newly Available Sites */}
-            <NewlyAvailableSites onSiteView={trackSiteView} />
-
-            {/* Popular Sites */}
-            <PopularSites onSiteView={trackSiteView} />
-
-            {/* Search Results */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="mb-4 text-gray-900">Search Results</h2>
-              {loading ? (
-                <div className="flex items-center justify-center py-12">
-                  <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-green-700"></div>
-                </div>
-              ) : (
-                <CampsiteList
-                  campsites={campsites}
-                  onSiteView={trackSiteView}
-                />
-              )}
-            </div>
-          </div>
-
-          {/* Sidebar */}
-          <div className="space-y-6">
-            {/* Map */}
-            <div className="bg-white rounded-lg shadow-md p-4">
-              <h3 className="mb-4 text-gray-900">Available Sites Map</h3>
-              <CampsiteMap campsites={campsites} />
-            </div>
-
-            {/* Sidebar Ads */}
-            <AdUnit type="amazon" format="vertical" />
-            <AdUnit type="google" format="vertical" />
-          </div>
-        </div>
-
-        {/* Bottom Ad Unit */}
-        <AdUnit type="google" format="horizontal" className="mt-8" />
-      </div>
+        {currentPage === 'favorites' && accessToken && (
+          <FavoritesPage accessToken={accessToken} />
+        )}
+        {currentPage === 'admin' && accessToken && userProfile?.isAdmin && (
+          <AdminPanel accessToken={accessToken} />
+        )}
+        {currentPage === 'bootstrap' && user && (
+          <AdminBootstrap 
+            userEmail={user.email} 
+            onSuccess={() => window.location.reload()} 
+          />
+        )}
+      </main>
 
       {/* Footer */}
-      <footer className="bg-gray-800 text-white mt-12">
-        <div className="max-w-7xl mx-auto px-4 py-8">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            <div>
-              <h3 className="mb-4 text-white">About CampFinder</h3>
-              <p className="text-gray-300">
-                Aggregating campsite availability from Recreation.gov and ReserveCalifornia.com to help you find your perfect camping spot.
-              </p>
-            </div>
-            <div>
-              <h3 className="mb-4 text-white">Data Sources</h3>
-              <ul className="space-y-2 text-gray-300">
-                <li>
-                  <a href="https://www.recreation.gov" target="_blank" rel="noopener noreferrer" className="hover:text-white">
-                    Recreation.gov
-                  </a>
-                </li>
-                <li>
-                  <a href="https://www.reservecalifornia.com" target="_blank" rel="noopener noreferrer" className="hover:text-white">
-                    ReserveCalifornia.com
-                  </a>
-                </li>
-                <li>
-                  <a href="https://www.campsitephotos.com" target="_blank" rel="noopener noreferrer" className="hover:text-white">
-                    CampsitePhotos.com
-                  </a>
-                </li>
-              </ul>
-            </div>
-            <div>
-              <h3 className="mb-4 text-white">Disclaimer</h3>
-              <p className="text-gray-300 text-sm">
-                Please verify all information on the official booking sites. Availability is subject to change.
-              </p>
-            </div>
+      <footer className="bg-white border-t border-gray-200 mt-12">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          <div className="text-center text-sm text-gray-600">
+            <p className="mb-2">
+              LastMinuteCamps - Find available campsites across the United States
+            </p>
+            <p className="text-xs text-gray-500">
+              Powered by Recreation.gov and multiple campground providers
+            </p>
+            {user && !userProfile?.isAdmin && (
+              <button
+                onClick={() => navigateTo('bootstrap')}
+                className="mt-3 text-xs text-blue-600 hover:underline flex items-center gap-1 mx-auto"
+              >
+                <Shield className="w-3 h-3" />
+                Become First Admin
+              </button>
+            )}
           </div>
         </div>
       </footer>
+
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <AuthModal
+          onClose={() => setShowAuthModal(false)}
+          onSuccess={handleAuthSuccess}
+          mode={authMode}
+          setMode={setAuthMode}
+        />
+      )}
     </div>
-  );
+  )
 }
+
+export default App

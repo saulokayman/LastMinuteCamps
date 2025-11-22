@@ -1,7 +1,7 @@
 
-  # Campsite Reservation Website
+  # Mobile Campsite Booking App
 
-  This is a code bundle for Campsite Reservation Website. The original project is available at https://www.figma.com/design/CZCBLuhsKoszBcWGhzCwXP/Campsite-Reservation-Website.
+  This is a code bundle for Mobile Campsite Booking App. The original project is available at https://www.figma.com/design/e8L6mAiJrztZhsPXSGavw5/Mobile-Campsite-Booking-App.
 
   ## Running the code
 
