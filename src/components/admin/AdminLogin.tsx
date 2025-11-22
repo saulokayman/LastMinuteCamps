@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
 import { Lock, User, Eye, EyeOff } from 'lucide-react';
 import { projectId, publicAnonKey } from '../../utils/supabase/info';
+import { supabase } from '../../utils/supabase/client';
 
 interface AdminLoginProps {
   onLoginSuccess: (accessToken: string, admin: any) => void;
@@ -15,11 +15,6 @@ export function AdminLogin({ onLoginSuccess }: AdminLoginProps) {
   const [error, setError] = useState('');
   const [isSignup, setIsSignup] = useState(false);
   const [name, setName] = useState('');
-
-  const supabase = createClient(
-    `https://${projectId}.supabase.co`,
-    publicAnonKey
-  );
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

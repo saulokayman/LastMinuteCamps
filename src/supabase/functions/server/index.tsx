@@ -651,56 +651,23 @@ app.post('/make-server-908ab15a/track-facility-view', async (c) => {
   }
 });
 
-// Take daily snapshot of availability and track newly available sites
-app.post('/make-server-908ab15a/take-snapshot', async (c) => {
+// Test RIDB API connection
+app.get('/make-server-908ab15a/test-ridb', async (c) => {
   try {
     const apiKey = Deno.env.get('RECREATION_GOV_API_KEY');
     
     if (!apiKey) {
-      return c.json({ error: 'Recreation.gov API key not configured' }, 500);
+      return c.json({ 
+        success: false, 
+        error: 'RECREATION_GOV_API_KEY environment variable is not set',
+        hasKey: false,
+      }, 500);
     }
 
-    const now = new Date();
-    const today = now.toISOString().split('T')[0];
-    const hour = now.getHours();
-    const snapshotKey = `snapshot_${today}_${hour}`;
+    // Test the RIDB API with a simple facilities query
+    const testUrl = 'https://ridb.recreation.gov/api/v1/facilities?limit=5&state=CA';
     
-    // Check if we already took a snapshot this hour
-    const existingSnapshot = await kv.get(snapshotKey);
-    if (existingSnapshot) {
-      return c.json({ message: 'Snapshot already taken this hour', date: today, hour });
-    }
-
-    const monthStart = new Date().toISOString().slice(0, 7) + '-01';
-
-    // Get snapshots from 1-4 days ago to compare
-    const previousSnapshots: Record<string, any> = {};
-    for (let daysAgo = 1; daysAgo <= 4; daysAgo++) {
-      const pastDate = new Date();
-      pastDate.setDate(pastDate.getDate() - daysAgo);
-      const pastDateStr = pastDate.toISOString().split('T')[0];
-      
-      // Get all snapshots from that day (multiple hours)
-      const pastSnapshots = await kv.getByPrefix(`snapshot_${pastDateStr}`);
-      if (pastSnapshots && pastSnapshots.length > 0) {
-        // Use the most recent snapshot from that day
-        const mostRecent = pastSnapshots[pastSnapshots.length - 1];
-        const parsed = JSON.parse(mostRecent);
-        if (parsed.sites) {
-          Object.assign(previousSnapshots, parsed.sites);
-        }
-      }
-    }
-
-    // Get popular camping facilities
-    const url = 'https://ridb.recreation.gov/api/v1/facilities';
-    const params = new URLSearchParams({
-      limit: '50',
-      activity: 'CAMPING',
-      sort: 'Name',
-    });
-
-    const response = await fetch(`${url}?${params}`, {
+    const response = await fetch(testUrl, {
       headers: {
         'apikey': apiKey,
         'Accept': 'application/json',
@@ -708,114 +675,295 @@ app.post('/make-server-908ab15a/take-snapshot', async (c) => {
     });
 
     if (!response.ok) {
-      return c.json({ error: 'Failed to fetch facilities' }, response.status);
+      const errorText = await response.text();
+      return c.json({
+        success: false,
+        error: `RIDB API returned error: ${response.status}`,
+        statusCode: response.status,
+        errorDetails: errorText,
+        hasKey: true,
+        apiKeyPrefix: apiKey.substring(0, 8) + '...',
+      }, response.status);
     }
 
     const data = await response.json();
-    const todayAvailability: Record<string, any> = {};
-    const newlyAvailableSites = [];
-    
-    if (data.RECDATA) {
-      for (const facility of data.RECDATA.slice(0, 30)) {
-        try {
-          // Check availability for today
-          const availUrl = `https://www.recreation.gov/api/camps/availability/campground/${facility.FacilityID}/month`;
-          const availParams = new URLSearchParams({
-            start_date: monthStart,
-          });
-
-          const availResponse = await fetch(`${availUrl}?${availParams}`, {
-            headers: {
-              'Accept': 'application/json',
-            },
-          });
-          
-          if (availResponse.ok) {
-            const availData = await availResponse.json();
-            const campsites = availData.campsites || {};
-            
-            for (const [siteId, siteData] of Object.entries(campsites)) {
-              const todayAvail = siteData.availabilities?.[today];
-              
-              if (todayAvail === 'Available') {
-                todayAvailability[siteId] = {
-                  facilityId: facility.FacilityID,
-                  facilityName: facility.FacilityName,
-                  siteName: siteData.campsite_name || siteData.site,
-                  siteId,
-                  date: today,
-                };
-                
-                // Check if this site was NOT available in any previous snapshot (1-4 days ago)
-                // This means it was reserved and is now newly available
-                const wasPreviouslyAvailable = previousSnapshots.hasOwnProperty(siteId);
-                
-                if (!wasPreviouslyAvailable) {
-                  // This is a newly available site (was reserved before, now available)
-                  newlyAvailableSites.push({
-                    ...todayAvailability[siteId],
-                    becameAvailableAt: new Date().toISOString(),
-                    facilityState: facility.AddressStateCode,
-                    facilityCity: facility.AddressCity,
-                    reservationUrl: `https://www.recreation.gov/camping/campsites/${siteId}`,
-                  });
-                }
-              }
-            }
-          }
-        } catch (err) {
-          console.log(`Error checking facility ${facility.FacilityID}: ${err}`);
-        }
-      }
-    }
-
-    // Save this hour's snapshot
-    await kv.set(snapshotKey, JSON.stringify({
-      date: today,
-      hour,
-      sites: todayAvailability,
-      timestamp: new Date().toISOString(),
-    }));
-
-    // Append newly available sites to today's list
-    const newlyAvailKey = `newly_available_${today}`;
-    const existingNewly = await kv.get(newlyAvailKey);
-    let allNewlyAvailable = existingNewly ? JSON.parse(existingNewly) : [];
-    
-    // Add new sites (avoid duplicates)
-    const existingSiteIds = new Set(allNewlyAvailable.map((s: any) => s.siteId));
-    const uniqueNewSites = newlyAvailableSites.filter(s => !existingSiteIds.has(s.siteId));
-    allNewlyAvailable = [...allNewlyAvailable, ...uniqueNewSites];
-    
-    await kv.set(newlyAvailKey, JSON.stringify(allNewlyAvailable));
-
-    // Clean up old snapshots (keep only last 5 days)
-    const fiveDaysAgo = new Date();
-    fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
-    const oldDateStr = fiveDaysAgo.toISOString().split('T')[0];
-    
-    // Delete all snapshots from 5 days ago
-    const oldSnapshots = await kv.getByPrefix(`snapshot_${oldDateStr}`);
-    if (oldSnapshots && oldSnapshots.length > 0) {
-      for (const snapshot of oldSnapshots) {
-        const parsed = JSON.parse(snapshot);
-        if (parsed.date === oldDateStr) {
-          await kv.del(`snapshot_${oldDateStr}_${parsed.hour}`);
-        }
-      }
-    }
-    
-    const oldNewlyAvailKey = `newly_available_${oldDateStr}`;
-    await kv.del(oldNewlyAvailKey);
+    const facilitiesCount = data.RECDATA?.length || 0;
 
     return c.json({
       success: true,
-      date: today,
-      hour,
-      totalSitesAvailable: Object.keys(todayAvailability).length,
-      newlyAvailable: uniqueNewSites.length,
-      totalNewlyAvailableToday: allNewlyAvailable.length,
+      message: 'RIDB API is working correctly',
+      hasKey: true,
+      apiKeyPrefix: apiKey.substring(0, 8) + '...',
+      testQuery: testUrl,
+      facilitiesReturned: facilitiesCount,
+      sampleFacility: data.RECDATA?.[0]?.FacilityName || 'N/A',
     });
+  } catch (error) {
+    console.log(`Error testing RIDB API: ${error}`);
+    return c.json({ 
+      success: false,
+      error: 'Failed to test RIDB API', 
+      details: String(error),
+      hasKey: !!Deno.env.get('RECREATION_GOV_API_KEY'),
+    }, 500);
+  }
+});
+
+// Test ReserveCalifornia API connection
+app.get('/make-server-908ab15a/test-reservecalifornia', async (c) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const nextWeek = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    
+    // Test the UseDirect RDR API
+    const testUrl = 'https://calirdr.usedirect.com/rdr/rdr/search/grid';
+    const testParams = {
+      PlaceId: -2147483648, // Root node for all of California
+      UnitTypeGroupId: -2147483648,
+      StartDate: today,
+      EndDate: nextWeek,
+      InSeasonOnly: true,
+      WebOnly: true,
+      UnitSort: 'name',
+      UnitCategoryId: 0,
+    };
+
+    const response = await fetch(testUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+      },
+      body: JSON.stringify(testParams),
+    });
+
+    // Get response text first to check what we're receiving
+    const responseText = await response.text();
+    
+    if (!response.ok) {
+      return c.json({
+        success: false,
+        error: `ReserveCalifornia API returned error: ${response.status}`,
+        statusCode: response.status,
+        errorDetails: responseText.substring(0, 500), // First 500 chars
+        isHtml: responseText.trim().startsWith('<'),
+      }, response.status);
+    }
+
+    // Try to parse as JSON
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (parseError) {
+      return c.json({
+        success: false,
+        error: 'ReserveCalifornia API returned non-JSON response',
+        statusCode: response.status,
+        responsePreview: responseText.substring(0, 500),
+        isHtml: responseText.trim().startsWith('<'),
+        parseError: String(parseError),
+      }, 500);
+    }
+
+    const availableUnitsCount = data.AvailableUnitsOnly?.length || 0;
+    const totalResults = data.TotalCount || 0;
+
+    return c.json({
+      success: true,
+      message: 'ReserveCalifornia API is working correctly',
+      testQuery: testUrl,
+      testParams: testParams,
+      availableUnitsReturned: availableUnitsCount,
+      totalResults: totalResults,
+      sampleUnit: data.AvailableUnitsOnly?.[0]?.Name || 'N/A',
+      sampleFacility: data.AvailableUnitsOnly?.[0]?.FacilityName || 'N/A',
+    });
+  } catch (error) {
+    console.log(`Error testing ReserveCalifornia API: ${error}`);
+    return c.json({ 
+      success: false,
+      error: 'Failed to test ReserveCalifornia API', 
+      details: String(error),
+    }, 500);
+  }
+});
+
+// Take daily snapshot of availability and track newly available sites
+// Shared function for snapshot logic
+async function executeSnapshot() {
+  const apiKey = Deno.env.get('RECREATION_GOV_API_KEY');
+  
+  if (!apiKey) {
+    throw new Error('Recreation.gov API key not configured');
+  }
+
+  const now = new Date();
+  const today = now.toISOString().split('T')[0];
+  const hour = now.getHours();
+  const snapshotKey = `snapshot_${today}_${hour}`;
+  
+  // Check if we already took a snapshot this hour
+  const existingSnapshot = await kv.get(snapshotKey);
+  if (existingSnapshot) {
+    return { 
+      message: 'Snapshot already taken this hour', 
+      date: today, 
+      hour,
+      alreadyExists: true 
+    };
+  }
+
+  const monthStart = new Date().toISOString().slice(0, 7) + '-01';
+
+  // Get snapshots from 1-4 days ago to compare
+  const previousSnapshots: Record<string, any> = {};
+  for (let daysAgo = 1; daysAgo <= 4; daysAgo++) {
+    const pastDate = new Date();
+    pastDate.setDate(pastDate.getDate() - daysAgo);
+    const pastDateStr = pastDate.toISOString().split('T')[0];
+    
+    // Get all snapshots from that day (multiple hours)
+    const pastSnapshots = await kv.getByPrefix(`snapshot_${pastDateStr}`);
+    if (pastSnapshots && pastSnapshots.length > 0) {
+      // Use the most recent snapshot from that day
+      const mostRecent = pastSnapshots[pastSnapshots.length - 1];
+      const parsed = JSON.parse(mostRecent);
+      if (parsed.sites) {
+        Object.assign(previousSnapshots, parsed.sites);
+      }
+    }
+  }
+
+  // Get popular camping facilities
+  const url = 'https://ridb.recreation.gov/api/v1/facilities';
+  const params = new URLSearchParams({
+    limit: '50',
+    activity: 'CAMPING',
+    sort: 'Name',
+  });
+
+  const response = await fetch(`${url}?${params}`, {
+    headers: {
+      'apikey': apiKey,
+      'Accept': 'application/json',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch facilities: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const todayAvailability: Record<string, any> = {};
+  const newlyAvailableSites = [];
+  
+  if (data.RECDATA) {
+    for (const facility of data.RECDATA.slice(0, 30)) {
+      try {
+        // Check availability for today
+        const availUrl = `https://www.recreation.gov/api/camps/availability/campground/${facility.FacilityID}/month`;
+        const availParams = new URLSearchParams({
+          start_date: monthStart,
+        });
+
+        const availResponse = await fetch(`${availUrl}?${availParams}`, {
+          headers: {
+            'Accept': 'application/json',
+          },
+        });
+        
+        if (availResponse.ok) {
+          const availData = await availResponse.json();
+          const campsites = availData.campsites || {};
+          
+          for (const [siteId, siteData] of Object.entries(campsites)) {
+            const todayAvail = siteData.availabilities?.[today];
+            
+            if (todayAvail === 'Available') {
+              todayAvailability[siteId] = {
+                facilityId: facility.FacilityID,
+                facilityName: facility.FacilityName,
+                siteName: siteData.campsite_name || siteData.site,
+                siteId,
+                date: today,
+              };
+              
+              // Check if this site was NOT available in any previous snapshot (1-4 days ago)
+              // This means it was reserved and is now newly available
+              const wasPreviouslyAvailable = previousSnapshots.hasOwnProperty(siteId);
+              
+              if (!wasPreviouslyAvailable) {
+                // This is a newly available site (was reserved before, now available)
+                newlyAvailableSites.push({
+                  ...todayAvailability[siteId],
+                  becameAvailableAt: new Date().toISOString(),
+                  facilityState: facility.AddressStateCode,
+                  facilityCity: facility.AddressCity,
+                  reservationUrl: `https://www.recreation.gov/camping/campsites/${siteId}`,
+                });
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.log(`Error checking facility ${facility.FacilityID}: ${err}`);
+      }
+    }
+  }
+
+  // Save this hour's snapshot
+  await kv.set(snapshotKey, JSON.stringify({
+    date: today,
+    hour,
+    sites: todayAvailability,
+    timestamp: new Date().toISOString(),
+  }));
+
+  // Append newly available sites to today's list
+  const newlyAvailKey = `newly_available_${today}`;
+  const existingNewly = await kv.get(newlyAvailKey);
+  let allNewlyAvailable = existingNewly ? JSON.parse(existingNewly) : [];
+  
+  // Add new sites (avoid duplicates)
+  const existingSiteIds = new Set(allNewlyAvailable.map((s: any) => s.siteId));
+  const uniqueNewSites = newlyAvailableSites.filter(s => !existingSiteIds.has(s.siteId));
+  allNewlyAvailable = [...allNewlyAvailable, ...uniqueNewSites];
+  
+  await kv.set(newlyAvailKey, JSON.stringify(allNewlyAvailable));
+
+  // Clean up old snapshots (keep only last 5 days)
+  const fiveDaysAgo = new Date();
+  fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+  const oldDateStr = fiveDaysAgo.toISOString().split('T')[0];
+  
+  // Delete all snapshots from 5 days ago
+  const oldSnapshots = await kv.getByPrefix(`snapshot_${oldDateStr}`);
+  if (oldSnapshots && oldSnapshots.length > 0) {
+    for (const snapshot of oldSnapshots) {
+      const parsed = JSON.parse(snapshot);
+      if (parsed.date === oldDateStr) {
+        await kv.del(`snapshot_${oldDateStr}_${parsed.hour}`);
+      }
+    }
+  }
+  
+  const oldNewlyAvailKey = `newly_available_${oldDateStr}`;
+  await kv.del(oldNewlyAvailKey);
+
+  return {
+    success: true,
+    date: today,
+    hour,
+    totalSitesAvailable: Object.keys(todayAvailability).length,
+    newlyAvailable: uniqueNewSites.length,
+    totalNewlyAvailableToday: allNewlyAvailable.length,
+  };
+}
+
+app.post('/make-server-908ab15a/take-snapshot', async (c) => {
+  try {
+    const result = await executeSnapshot();
+    return c.json(result);
   } catch (error) {
     console.log(`Error taking snapshot: ${error}`);
     return c.json({ error: 'Failed to take snapshot', details: String(error) }, 500);
@@ -834,6 +982,7 @@ app.get('/make-server-908ab15a/cron/snapshot', async (c) => {
     
     // Debug logging
     console.log('=== CRON AUTH DEBUG ===');
+    console.log('All headers:', JSON.stringify(Object.fromEntries(c.req.raw.headers)));
     console.log('Header secret:', cronSecretHeader ? '[PRESENT]' : '[MISSING]');
     console.log('Query secret:', cronSecretQuery ? '[PRESENT]' : '[MISSING]');
     console.log('Received secret:', cronSecret ? '[PRESENT]' : '[MISSING]');
@@ -846,25 +995,10 @@ app.get('/make-server-908ab15a/cron/snapshot', async (c) => {
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
-    // Trigger snapshot
-    const apiKey = Deno.env.get('RECREATION_GOV_API_KEY');
-    if (!apiKey) {
-      return c.json({ error: 'Recreation.gov API key not configured' }, 500);
-    }
-
-    // Use internal snapshot logic
-    const response = await fetch(
-      `http://localhost:${Deno.env.get('PORT') || 8000}/make-server-908ab15a/take-snapshot`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const result = await response.json();
-    console.log(`Cron snapshot completed:`, result);
+    // Execute snapshot directly using shared function
+    console.log('Starting cron snapshot execution...');
+    const result = await executeSnapshot();
+    console.log('Cron snapshot completed:', result);
 
     return c.json({
       success: true,
@@ -960,6 +1094,450 @@ app.post('/make-server-908ab15a/admin/verify', async (c) => {
   } catch (error) {
     console.log(`Admin verify error: ${error}`);
     return c.json({ error: 'Failed to verify admin', details: String(error) }, 500);
+  }
+});
+
+// ===== USER AUTHENTICATION ROUTES =====
+
+// User signup
+app.post('/make-server-908ab15a/user/signup', async (c) => {
+  try {
+    const { email, password, name } = await c.req.json();
+
+    const { data, error } = await supabase.auth.admin.createUser({
+      email,
+      password,
+      user_metadata: { name, role: 'user' },
+      email_confirm: true, // Auto-confirm since email server not configured
+    });
+
+    if (error) {
+      console.log(`User signup error: ${error.message}`);
+      return c.json({ error: error.message }, 400);
+    }
+
+    // Store user info
+    await kv.set(`user_${data.user.id}`, JSON.stringify({
+      id: data.user.id,
+      email,
+      name,
+      role: 'user',
+      createdAt: new Date().toISOString(),
+    }));
+
+    return c.json({ 
+      success: true, 
+      message: 'Account created successfully',
+      userId: data.user.id 
+    });
+  } catch (error) {
+    console.log(`User signup error: ${error}`);
+    return c.json({ error: 'Failed to create account', details: String(error) }, 500);
+  }
+});
+
+// Get user profile
+app.get('/make-server-908ab15a/user/profile', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      console.log('User profile: No access token provided');
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      console.log(`User profile: Invalid access token - ${error?.message}`);
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    // Get user data from KV store
+    const userDataStr = await kv.get(`user_${user.id}`);
+    
+    if (!userDataStr) {
+      console.log(`User profile: User data not found for ${user.id}`);
+      return c.json({ error: 'User data not found' }, 404);
+    }
+
+    const userData = JSON.parse(userDataStr);
+
+    return c.json({
+      id: userData.id,
+      email: userData.email,
+      name: userData.name,
+      isAdmin: userData.role === 'admin'
+    });
+  } catch (error) {
+    console.log(`User profile error: ${error}`);
+    return c.json({ error: 'Failed to fetch user profile', details: String(error) }, 500);
+  }
+});
+
+// Make user admin (utility endpoint)
+app.post('/make-server-908ab15a/admin/promote-user', async (c) => {
+  try {
+    const { email } = await c.req.json();
+    
+    if (!email) {
+      return c.json({ error: 'Email is required' }, 400);
+    }
+
+    console.log(`Attempting to promote user: ${email}`);
+
+    // Get all users from Supabase Auth
+    const { data: { users }, error: listError } = await supabase.auth.admin.listUsers();
+    
+    if (listError) {
+      console.log(`Error listing users: ${listError.message}`);
+      return c.json({ error: listError.message }, 500);
+    }
+
+    // Find user by email
+    const targetUser = users.find(u => u.email === email);
+    
+    if (!targetUser) {
+      console.log(`User not found: ${email}`);
+      return c.json({ error: 'User not found' }, 404);
+    }
+
+    console.log(`Found user: ${targetUser.id}`);
+
+    // Get current user data
+    const userDataStr = await kv.get(`user_${targetUser.id}`);
+    
+    if (!userDataStr) {
+      console.log(`User data not found in KV store for ${targetUser.id}`);
+      return c.json({ error: 'User data not found in database' }, 404);
+    }
+
+    const userData = JSON.parse(userDataStr);
+    
+    // Update role to admin
+    userData.role = 'admin';
+    userData.promotedAt = new Date().toISOString();
+    
+    await kv.set(`user_${targetUser.id}`, JSON.stringify(userData));
+    
+    console.log(`User ${email} promoted to admin successfully`);
+
+    return c.json({ 
+      success: true, 
+      message: `User ${email} is now an admin`,
+      userId: targetUser.id 
+    });
+  } catch (error) {
+    console.log(`Error promoting user: ${error}`);
+    return c.json({ error: 'Failed to promote user', details: String(error) }, 500);
+  }
+});
+
+// Get user favorites
+app.get('/make-server-908ab15a/user/favorites', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const favoritesData = await kv.get(`user_favorites_${user.id}`);
+    const favorites = favoritesData ? JSON.parse(favoritesData) : [];
+
+    return c.json({ favorites });
+  } catch (error) {
+    console.log(`Error fetching favorites: ${error}`);
+    return c.json({ error: 'Failed to fetch favorites', details: String(error) }, 500);
+  }
+});
+
+// Add favorite
+app.post('/make-server-908ab15a/user/favorites', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const { siteId, siteName, facilityId, facilityName, source } = await c.req.json();
+
+    const favoritesData = await kv.get(`user_favorites_${user.id}`);
+    const favorites = favoritesData ? JSON.parse(favoritesData) : [];
+
+    // Check if already favorited
+    if (favorites.some((f: any) => f.siteId === siteId)) {
+      return c.json({ error: 'Site already in favorites' }, 400);
+    }
+
+    favorites.push({
+      siteId,
+      siteName,
+      facilityId,
+      facilityName,
+      source,
+      addedAt: new Date().toISOString(),
+    });
+
+    await kv.set(`user_favorites_${user.id}`, JSON.stringify(favorites));
+
+    return c.json({ success: true, favorites });
+  } catch (error) {
+    console.log(`Error adding favorite: ${error}`);
+    return c.json({ error: 'Failed to add favorite', details: String(error) }, 500);
+  }
+});
+
+// Remove favorite
+app.delete('/make-server-908ab15a/user/favorites/:siteId', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const { siteId } = c.req.param();
+
+    const favoritesData = await kv.get(`user_favorites_${user.id}`);
+    const favorites = favoritesData ? JSON.parse(favoritesData) : [];
+
+    const updatedFavorites = favorites.filter((f: any) => f.siteId !== siteId);
+
+    await kv.set(`user_favorites_${user.id}`, JSON.stringify(updatedFavorites));
+
+    return c.json({ success: true, favorites: updatedFavorites });
+  } catch (error) {
+    console.log(`Error removing favorite: ${error}`);
+    return c.json({ error: 'Failed to remove favorite', details: String(error) }, 500);
+  }
+});
+
+// Get user alerts
+app.get('/make-server-908ab15a/user/alerts', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const alertsData = await kv.get(`user_alerts_${user.id}`);
+    const alerts = alertsData ? JSON.parse(alertsData) : [];
+
+    return c.json({ alerts });
+  } catch (error) {
+    console.log(`Error fetching alerts: ${error}`);
+    return c.json({ error: 'Failed to fetch alerts', details: String(error) }, 500);
+  }
+});
+
+// Create alert
+app.post('/make-server-908ab15a/user/alerts', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const { siteId, siteName, facilityId, facilityName, source, startDate, endDate, email } = await c.req.json();
+
+    const alertsData = await kv.get(`user_alerts_${user.id}`);
+    const alerts = alertsData ? JSON.parse(alertsData) : [];
+
+    const alertId = `alert_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    alerts.push({
+      alertId,
+      siteId,
+      siteName,
+      facilityId,
+      facilityName,
+      source,
+      startDate,
+      endDate,
+      email: email || user.email,
+      active: true,
+      createdAt: new Date().toISOString(),
+      lastChecked: null,
+      triggeredAt: null,
+    });
+
+    await kv.set(`user_alerts_${user.id}`, JSON.stringify(alerts));
+
+    return c.json({ success: true, alertId, alerts });
+  } catch (error) {
+    console.log(`Error creating alert: ${error}`);
+    return c.json({ error: 'Failed to create alert', details: String(error) }, 500);
+  }
+});
+
+// Delete alert
+app.delete('/make-server-908ab15a/user/alerts/:alertId', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const { alertId } = c.req.param();
+
+    const alertsData = await kv.get(`user_alerts_${user.id}`);
+    const alerts = alertsData ? JSON.parse(alertsData) : [];
+
+    const updatedAlerts = alerts.filter((a: any) => a.alertId !== alertId);
+
+    await kv.set(`user_alerts_${user.id}`, JSON.stringify(updatedAlerts));
+
+    return c.json({ success: true, alerts: updatedAlerts });
+  } catch (error) {
+    console.log(`Error deleting alert: ${error}`);
+    return c.json({ error: 'Failed to delete alert', details: String(error) }, 500);
+  }
+});
+
+// Get site ratings
+app.get('/make-server-908ab15a/ratings/:siteId', async (c) => {
+  try {
+    const { siteId } = c.req.param();
+
+    const ratingsData = await kv.get(`site_ratings_${siteId}`);
+    const ratings = ratingsData ? JSON.parse(ratingsData) : { ratings: [], average: 0, count: 0 };
+
+    return c.json(ratings);
+  } catch (error) {
+    console.log(`Error fetching ratings: ${error}`);
+    return c.json({ error: 'Failed to fetch ratings', details: String(error) }, 500);
+  }
+});
+
+// Add or update rating
+app.post('/make-server-908ab15a/ratings/:siteId', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    const { siteId } = c.req.param();
+    const { rating, review } = await c.req.json();
+
+    if (rating < 1 || rating > 5) {
+      return c.json({ error: 'Rating must be between 1 and 5' }, 400);
+    }
+
+    const ratingsData = await kv.get(`site_ratings_${siteId}`);
+    const ratingsObj = ratingsData ? JSON.parse(ratingsData) : { ratings: [], average: 0, count: 0 };
+
+    // Remove existing rating from this user if any
+    const existingIndex = ratingsObj.ratings.findIndex((r: any) => r.userId === user.id);
+    if (existingIndex !== -1) {
+      ratingsObj.ratings.splice(existingIndex, 1);
+    }
+
+    // Add new rating
+    ratingsObj.ratings.push({
+      userId: user.id,
+      userName: user.user_metadata?.name || user.email,
+      rating,
+      review: review || '',
+      createdAt: new Date().toISOString(),
+    });
+
+    // Calculate new average
+    const sum = ratingsObj.ratings.reduce((acc: number, r: any) => acc + r.rating, 0);
+    ratingsObj.average = sum / ratingsObj.ratings.length;
+    ratingsObj.count = ratingsObj.ratings.length;
+
+    await kv.set(`site_ratings_${siteId}`, JSON.stringify(ratingsObj));
+
+    return c.json({ success: true, ratings: ratingsObj });
+  } catch (error) {
+    console.log(`Error adding rating: ${error}`);
+    return c.json({ error: 'Failed to add rating', details: String(error) }, 500);
+  }
+});
+
+// Get user's ratings
+app.get('/make-server-908ab15a/user/ratings', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+
+    if (error || !user) {
+      return c.json({ error: 'Invalid access token' }, 401);
+    }
+
+    // Get all ratings and filter by user
+    const allRatings = await kv.getByPrefix('site_ratings_');
+    const userRatings: any[] = [];
+
+    for (const ratingData of allRatings) {
+      const ratingsObj = JSON.parse(ratingData);
+      const userRating = ratingsObj.ratings.find((r: any) => r.userId === user.id);
+      if (userRating) {
+        userRatings.push({
+          siteId: ratingData.split('site_ratings_')[1],
+          ...userRating,
+        });
+      }
+    }
+
+    return c.json({ ratings: userRatings });
+  } catch (error) {
+    console.log(`Error fetching user ratings: ${error}`);
+    return c.json({ error: 'Failed to fetch user ratings', details: String(error) }, 500);
   }
 });
 
@@ -1104,6 +1682,85 @@ app.get('/make-server-908ab15a/admin/analytics', async (c) => {
   } catch (error) {
     console.log(`Get analytics error: ${error}`);
     return c.json({ error: 'Failed to get analytics', details: String(error) }, 500);
+  }
+});
+
+// Get snapshot history (admin only)
+app.get('/make-server-908ab15a/admin/snapshot-history', async (c) => {
+  try {
+    const accessToken = c.req.header('Authorization')?.split(' ')[1];
+    
+    if (!accessToken) {
+      return c.json({ error: 'No access token provided' }, 401);
+    }
+
+    const { data: { user }, error } = await supabase.auth.getUser(accessToken);
+    if (error || !user) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+
+    // Verify admin
+    const adminData = await kv.get(`admin_user_${user.id}`);
+    if (!adminData) {
+      return c.json({ error: 'Admin access required' }, 403);
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    
+    // Get all snapshots from today
+    const todaySnapshots = await kv.getByPrefix(`snapshot_${today}`);
+    const todayRuns = [];
+    
+    if (todaySnapshots && todaySnapshots.length > 0) {
+      for (const snapshot of todaySnapshots) {
+        const parsed = JSON.parse(snapshot);
+        todayRuns.push({
+          date: parsed.date,
+          hour: parsed.hour,
+          timestamp: parsed.timestamp,
+          sitesCount: Object.keys(parsed.sites || {}).length,
+        });
+      }
+    }
+
+    // Get newly available sites from today
+    const newlyAvailKey = `newly_available_${today}`;
+    const newlyAvailData = await kv.get(newlyAvailKey);
+    const newlyAvailableSites = newlyAvailData ? JSON.parse(newlyAvailData) : [];
+
+    // Get the most recent snapshot overall
+    let lastSnapshot = null;
+    if (todayRuns.length > 0) {
+      const mostRecent = todayRuns.reduce((latest, current) => {
+        return new Date(current.timestamp) > new Date(latest.timestamp) ? current : latest;
+      });
+      lastSnapshot = mostRecent;
+    } else {
+      // Check yesterday
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      const yesterdaySnapshots = await kv.getByPrefix(`snapshot_${yesterdayStr}`);
+      
+      if (yesterdaySnapshots && yesterdaySnapshots.length > 0) {
+        const parsed = JSON.parse(yesterdaySnapshots[yesterdaySnapshots.length - 1]);
+        lastSnapshot = {
+          date: parsed.date,
+          hour: parsed.hour,
+          timestamp: parsed.timestamp,
+          sitesCount: Object.keys(parsed.sites || {}).length,
+        };
+      }
+    }
+
+    return c.json({
+      todayRuns: todayRuns.sort((a, b) => a.hour - b.hour),
+      lastSnapshot,
+      newlyAvailableCount: newlyAvailableSites.length,
+    });
+  } catch (error) {
+    console.log(`Get snapshot history error: ${error}`);
+    return c.json({ error: 'Failed to get snapshot history', details: String(error) }, 500);
   }
 });
 

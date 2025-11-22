@@ -1,28 +1,41 @@
 import { useState, useEffect } from 'react';
-import { Clock, CheckCircle, XCircle, RefreshCw, Calendar } from 'lucide-react';
+import { Clock, CheckCircle, XCircle, RefreshCw, Calendar, AlertCircle } from 'lucide-react';
 import { projectId, publicAnonKey } from '../../utils/supabase/info';
 
 interface SnapshotStatusProps {
   accessToken: string;
 }
 
+interface ScheduledTime {
+  hour: number;
+  label: string;
+  description: string;
+  lastRun?: string;
+  status?: 'success' | 'pending' | 'missed';
+}
+
 export function SnapshotStatus({ accessToken }: SnapshotStatusProps) {
-  const [lastSnapshot, setLastSnapshot] = useState<any>(null);
+  const [snapshotData, setSnapshotData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [testing, setTesting] = useState(false);
+  const [scheduledTimes, setScheduledTimes] = useState<ScheduledTime[]>([
+    { hour: 8, label: '8:00 AM', description: 'When sites release' },
+    { hour: 12, label: '12:00 PM', description: 'Cancellations check' },
+    { hour: 20, label: '8:00 PM', description: 'Late cancellations' },
+  ]);
 
   useEffect(() => {
-    checkLastSnapshot();
+    checkSnapshots();
     // Check every minute
-    const interval = setInterval(checkLastSnapshot, 60000);
+    const interval = setInterval(checkSnapshots, 60000);
     return () => clearInterval(interval);
   }, []);
 
-  const checkLastSnapshot = async () => {
+  const checkSnapshots = async () => {
     try {
-      const today = new Date().toISOString().split('T')[0];
+      // Get snapshot history from the backend
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/newly-available`,
+        `https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/admin/snapshot-history`,
         {
           headers: {
             'Authorization': `Bearer ${accessToken}`,
@@ -32,34 +45,40 @@ export function SnapshotStatus({ accessToken }: SnapshotStatusProps) {
 
       if (response.ok) {
         const data = await response.json();
-        if (data.length > 0) {
-          // Get the most recent timestamp
-          const mostRecent = data.reduce((latest: any, current: any) => {
-            const latestTime = new Date(latest.becameAvailableAt).getTime();
-            const currentTime = new Date(current.becameAvailableAt).getTime();
-            return currentTime > latestTime ? current : latest;
-          });
+        setSnapshotData(data);
+        
+        // Update scheduled times with status
+        const now = new Date();
+        const pacificOffset = -8; // PST is UTC-8
+        const pacificHour = (now.getUTCHours() + pacificOffset + 24) % 24;
+        
+        const updatedSchedule = scheduledTimes.map(time => {
+          const runData = data.todayRuns?.find((run: any) => run.hour === time.hour);
           
-          setLastSnapshot({
-            timestamp: mostRecent.becameAvailableAt,
-            count: data.length,
-            status: 'success',
-          });
-        } else {
-          setLastSnapshot({
-            timestamp: null,
-            count: 0,
-            status: 'no_data',
-          });
-        }
+          if (runData) {
+            return {
+              ...time,
+              lastRun: runData.timestamp,
+              status: 'success' as const,
+            };
+          } else if (pacificHour > time.hour) {
+            // Past the scheduled time but no run recorded
+            return {
+              ...time,
+              status: 'missed' as const,
+            };
+          } else {
+            return {
+              ...time,
+              status: 'pending' as const,
+            };
+          }
+        });
+        
+        setScheduledTimes(updatedSchedule);
       }
     } catch (error) {
-      console.error('Error checking snapshot status:', error);
-      setLastSnapshot({
-        timestamp: null,
-        count: 0,
-        status: 'error',
-      });
+      console.error('Error checking snapshots:', error);
     } finally {
       setLoading(false);
     }
@@ -78,10 +97,16 @@ export function SnapshotStatus({ accessToken }: SnapshotStatusProps) {
       );
 
       const result = await response.json();
-      alert(JSON.stringify(result, null, 2));
-      await checkLastSnapshot();
+      
+      if (response.ok) {
+        alert('✅ Snapshot test successful!\n\n' + JSON.stringify(result.result || result, null, 2));
+      } else {
+        alert('❌ Snapshot test failed!\n\n' + JSON.stringify(result, null, 2));
+      }
+      
+      await checkSnapshots();
     } catch (error) {
-      alert('Error testing cron: ' + error);
+      alert('❌ Error testing cron: ' + error);
     } finally {
       setTesting(false);
     }
@@ -102,21 +127,41 @@ export function SnapshotStatus({ accessToken }: SnapshotStatusProps) {
     return 'Just now';
   };
 
-  const getStatusColor = () => {
-    if (!lastSnapshot) return 'gray';
-    if (lastSnapshot.status === 'success') {
-      // Check if snapshot is recent (within 12 hours)
-      if (lastSnapshot.timestamp) {
-        const age = Date.now() - new Date(lastSnapshot.timestamp).getTime();
-        if (age < 12 * 60 * 60 * 1000) return 'green';
-        if (age < 24 * 60 * 60 * 1000) return 'yellow';
-      }
-      return 'yellow';
+  const getOverallStatus = () => {
+    if (!snapshotData) return { color: 'gray', text: 'Loading...', icon: Clock };
+    
+    const hasRecentSnapshot = snapshotData.lastSnapshot && 
+      (Date.now() - new Date(snapshotData.lastSnapshot.timestamp).getTime()) < 12 * 60 * 60 * 1000;
+    
+    const hasTodayRuns = snapshotData.todayRuns && snapshotData.todayRuns.length > 0;
+    
+    if (hasRecentSnapshot || hasTodayRuns) {
+      return { 
+        color: 'green', 
+        text: 'System Running', 
+        icon: CheckCircle 
+      };
     }
-    return 'red';
+    
+    // Check if any scheduled time was missed
+    const missedRuns = scheduledTimes.filter(t => t.status === 'missed').length;
+    if (missedRuns > 0) {
+      return { 
+        color: 'red', 
+        text: 'Cron Jobs Not Configured', 
+        icon: XCircle 
+      };
+    }
+    
+    return { 
+      color: 'yellow', 
+      text: 'Waiting for First Run', 
+      icon: Clock 
+    };
   };
 
-  const statusColor = getStatusColor();
+  const status = getOverallStatus();
+  const StatusIcon = status.icon;
 
   if (loading) {
     return (
@@ -152,98 +197,97 @@ export function SnapshotStatus({ accessToken }: SnapshotStatusProps) {
       {/* Status Indicator */}
       <div className="flex items-start gap-4 mb-6">
         <div className={`p-3 rounded-lg ${
-          statusColor === 'green' ? 'bg-green-100' :
-          statusColor === 'yellow' ? 'bg-yellow-100' :
-          statusColor === 'red' ? 'bg-red-100' :
+          status.color === 'green' ? 'bg-green-100' :
+          status.color === 'yellow' ? 'bg-yellow-100' :
+          status.color === 'red' ? 'bg-red-100' :
           'bg-gray-100'
         }`}>
-          {statusColor === 'green' && <CheckCircle className="w-6 h-6 text-green-600" />}
-          {statusColor === 'yellow' && <Clock className="w-6 h-6 text-yellow-600" />}
-          {statusColor === 'red' && <XCircle className="w-6 h-6 text-red-600" />}
-          {statusColor === 'gray' && <Clock className="w-6 h-6 text-gray-600" />}
+          <StatusIcon className={`w-6 h-6 ${
+            status.color === 'green' ? 'text-green-600' :
+            status.color === 'yellow' ? 'text-yellow-600' :
+            status.color === 'red' ? 'text-red-600' :
+            'text-gray-600'
+          }`} />
         </div>
 
         <div className="flex-1">
-          <h4 className="text-gray-900 mb-1">
-            {statusColor === 'green' && 'System Running'}
-            {statusColor === 'yellow' && 'Waiting for Next Snapshot'}
-            {statusColor === 'red' && 'No Recent Snapshots'}
-            {statusColor === 'gray' && 'Status Unknown'}
-          </h4>
+          <h4 className="text-gray-900 mb-1">{status.text}</h4>
           
-          {lastSnapshot?.timestamp && (
+          {snapshotData?.lastSnapshot?.timestamp && (
             <p className="text-gray-600 text-sm">
-              Last snapshot: {getTimeAgo(lastSnapshot.timestamp)}
+              Last snapshot: {getTimeAgo(snapshotData.lastSnapshot.timestamp)}
             </p>
           )}
           
-          {lastSnapshot?.count > 0 && (
+          {snapshotData?.newlyAvailableCount > 0 && (
             <p className="text-gray-600 text-sm">
-              {lastSnapshot.count} newly available sites detected today
+              {snapshotData.newlyAvailableCount} newly available sites detected today
+            </p>
+          )}
+
+          {snapshotData?.todayRuns && snapshotData.todayRuns.length > 0 && (
+            <p className="text-green-600 text-sm">
+              {snapshotData.todayRuns.length} snapshot{snapshotData.todayRuns.length > 1 ? 's' : ''} completed today
             </p>
           )}
         </div>
       </div>
 
-      {/* Schedule Info */}
+      {/* Schedule Info with Status */}
       <div className="border-t border-gray-200 pt-4">
         <h4 className="text-gray-700 mb-3 flex items-center gap-2">
           <Calendar className="w-4 h-4" />
           Scheduled Times (Pacific)
         </h4>
         <div className="space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-600">Morning (8:00 AM)</span>
-            <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded text-xs">
-              When sites release
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-600">Midday (12:00 PM)</span>
-            <span className="px-2 py-1 bg-purple-100 text-purple-700 rounded text-xs">
-              Cancellations check
-            </span>
-          </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-gray-600">Evening (8:00 PM)</span>
-            <span className="px-2 py-1 bg-orange-100 text-orange-700 rounded text-xs">
-              Late cancellations
-            </span>
-          </div>
+          {scheduledTimes.map((time, index) => (
+            <div key={index} className="flex items-center justify-between text-sm">
+              <div className="flex items-center gap-2">
+                <span className="text-gray-600">{time.label}</span>
+                {time.status === 'success' && (
+                  <CheckCircle className="w-4 h-4 text-green-600" />
+                )}
+                {time.status === 'missed' && (
+                  <XCircle className="w-4 h-4 text-red-600" />
+                )}
+                {time.status === 'pending' && (
+                  <Clock className="w-4 h-4 text-gray-400" />
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-1 rounded text-xs ${
+                  time.status === 'success' ? 'bg-green-100 text-green-700' :
+                  time.status === 'missed' ? 'bg-red-100 text-red-700' :
+                  'bg-blue-100 text-blue-700'
+                }`}>
+                  {time.status === 'success' ? (time.lastRun ? `Ran ${getTimeAgo(time.lastRun)}` : 'Success') :
+                   time.status === 'missed' ? 'Missed' :
+                   time.description}
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Setup Instructions */}
-      {statusColor === 'red' && (
+      {/* Action Required - Only show if cron is not working */}
+      {status.color === 'red' && (
         <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-          <p className="text-red-800 text-sm mb-2">
+          <p className="text-red-800 text-sm mb-2 flex items-center gap-2">
+            <AlertCircle className="w-4 h-4" />
             <strong>Action Required:</strong> Automatic snapshots not configured
           </p>
           <p className="text-red-700 text-xs mb-3">
-            Set up scheduled functions to run snapshots automatically.
+            Go to the "Cron Setup" tab for detailed instructions on setting up automated snapshots.
           </p>
-          <div className="space-y-2 text-xs text-red-700">
-            <p><strong>Option 1 - Netlify Scheduled Functions (Recommended if on Netlify):</strong></p>
-            <ol className="list-decimal ml-4 space-y-1">
-              <li>Deploy to Netlify (requires Pro plan $19/mo)</li>
-              <li>Set environment variables: SUPABASE_PROJECT_ID, CRON_SECRET</li>
-              <li>Functions auto-run on schedule</li>
-            </ol>
-            <p className="mt-2"><strong>Option 2 - cron-job.org (Free):</strong></p>
-            <ol className="list-decimal ml-4 space-y-1">
-              <li>Sign up at cron-job.org</li>
-              <li>Create 3 jobs pointing to your snapshot endpoint</li>
-              <li>Add X-Cron-Secret header</li>
-            </ol>
-            <p className="mt-2">See <strong>NETLIFY_CRON_SETUP.md</strong> or <strong>CRON_SETUP.md</strong> for full instructions.</p>
-          </div>
         </div>
       )}
 
-      {statusColor === 'yellow' && (
+      {/* Waiting message - Only show if pending first run */}
+      {status.color === 'yellow' && (
         <div className="mt-4 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
           <p className="text-yellow-800 text-sm">
-            Last snapshot is over 12 hours old. Next scheduled run should happen soon.
+            Waiting for scheduled runs. You can test the system manually using the "Test Now" button above.
           </p>
         </div>
       )}

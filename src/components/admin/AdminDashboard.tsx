@@ -9,12 +9,17 @@ import {
   Settings,
   LogOut,
   ChevronDown,
+  Clock,
+  Home,
+  ArrowLeft,
 } from 'lucide-react';
+
 import { AnalyticsDashboard } from './AnalyticsDashboard';
 import { AdConfiguration } from './AdConfiguration';
 import { SnapshotStatus } from './SnapshotStatus';
+import { CronSetupGuide } from './CronSetupGuide';
 import { projectId, publicAnonKey } from '../../utils/supabase/info';
-import { createClient } from '@supabase/supabase-js';
+import { supabase } from '../../utils/supabase/client';
 
 interface AdminDashboardProps {
   accessToken: string;
@@ -23,14 +28,9 @@ interface AdminDashboardProps {
 }
 
 export function AdminDashboard({ accessToken, admin, onLogout }: AdminDashboardProps) {
-  const [activeTab, setActiveTab] = useState<'analytics' | 'ads'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'ads' | 'cron'>('analytics');
   const [overallStats, setOverallStats] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-
-  const supabase = createClient(
-    `https://${projectId}.supabase.co`,
-    publicAnonKey
-  );
 
   useEffect(() => {
     fetchOverallStats();
@@ -74,13 +74,26 @@ export function AdminDashboard({ accessToken, admin, onLogout }: AdminDashboardP
               <p className="text-gray-600 text-sm">Welcome back, {admin.name}</p>
             </div>
 
-            <button
-              onClick={handleLogout}
-              className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>Logout</span>
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => {
+                  window.history.pushState({}, '', '/');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                }}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white hover:bg-green-700 rounded-lg transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back to Site</span>
+              </button>
+              
+              <button
+                onClick={handleLogout}
+                className="flex items-center gap-2 px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Logout</span>
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -163,6 +176,18 @@ export function AdminDashboard({ accessToken, admin, onLogout }: AdminDashboardP
                 <DollarSign className="w-5 h-5" />
                 <span>Ad Management</span>
               </button>
+
+              <button
+                onClick={() => setActiveTab('cron')}
+                className={`flex items-center gap-2 px-6 py-4 transition-colors ${
+                  activeTab === 'cron'
+                    ? 'border-b-2 border-green-600 text-green-600'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <Clock className="w-5 h-5" />
+                <span>Cron Setup</span>
+              </button>
             </nav>
           </div>
 
@@ -174,6 +199,10 @@ export function AdminDashboard({ accessToken, admin, onLogout }: AdminDashboardP
 
             {activeTab === 'ads' && (
               <AdConfiguration accessToken={accessToken} />
+            )}
+
+            {activeTab === 'cron' && (
+              <CronSetupGuide />
             )}
           </div>
         </div>

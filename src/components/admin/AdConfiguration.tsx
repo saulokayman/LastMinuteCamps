@@ -173,7 +173,7 @@ export function AdConfiguration({ accessToken }: AdConfigurationProps) {
                   className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
                 <p className="text-gray-500 text-xs mt-1">
-                  Find this in your AdSense account under Account > Settings
+                  Find this in your AdSense account under Account &gt; Settings
                 </p>
               </div>
 

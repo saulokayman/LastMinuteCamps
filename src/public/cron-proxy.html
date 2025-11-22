@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Cron Proxy</title>
+  <meta charset="UTF-8">
+</head>
+<body>
+  <h1>Cron Job Proxy</h1>
+  <p id="status">Triggering snapshot...</p>
+  
+  <script>
+    // This page acts as a proxy for cron-job.org
+    // It adds the required Authorization header that Supabase needs
+    
+    const projectId = 'fsrxwrjvjkmywnvlpecn';
+    const publicAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzcnh3cmp2amtteXdudmxwZWNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzE5NjI3NTAsImV4cCI6MjA0NzUzODc1MH0.YsRX-OefD5CAr8VfK6nU-O_SljpP7lOkUR-ejkbuZXo';
+    
+    // Get the secret from the URL query parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const secret = urlParams.get('secret');
+    
+    if (secret !== 'campfinder-cron-2024') {
+      document.getElementById('status').innerHTML = '❌ Error: Invalid secret';
+      document.getElementById('status').style.color = 'red';
+    } else {
+      // Call the Supabase backend with proper authentication
+      fetch(`https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/cron/snapshot?secret=${secret}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+      })
+        .then(response => response.json())
+        .then(data => {
+          if (data.success) {
+            document.getElementById('status').innerHTML = '✅ Snapshot completed successfully!<br><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            document.getElementById('status').style.color = 'green';
+          } else {
+            document.getElementById('status').innerHTML = '❌ Error: ' + (data.error || 'Unknown error') + '<br><pre>' + JSON.stringify(data, null, 2) + '</pre>';
+            document.getElementById('status').style.color = 'red';
+          }
+        })
+        .catch(error => {
+          document.getElementById('status').innerHTML = '❌ Network error: ' + error.message;
+          document.getElementById('status').style.color = 'red';
+        });
+    }
+  </script>
+</body>
+</html>

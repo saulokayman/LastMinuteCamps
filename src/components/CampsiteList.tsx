@@ -1,5 +1,7 @@
 import { MapPin, DollarSign, Calendar, Maximize, Star, Camera, ExternalLink } from 'lucide-react';
 import { Campsite } from '../App';
+import { SiteActions } from './SiteActions';
+import { SiteRating } from './SiteRating';
 
 interface CampsiteListProps {
   campsites: Campsite[];
@@ -81,16 +83,25 @@ export function CampsiteList({ campsites, onSiteView }: CampsiteListProps) {
                   </div>
                 )}
               </div>
-              <a
-                href={siteUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1 px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <span>Book Now</span>
-                <ExternalLink className="w-4 h-4" />
-              </a>
+              <div className="flex items-center gap-3">
+                <SiteActions
+                  siteId={site.CampsiteID || `${index}`}
+                  siteName={site.CampsiteName || 'Unnamed Site'}
+                  facilityId={site.FacilityID || ''}
+                  facilityName={site.facilityName || ''}
+                  source={site.source || 'recreation.gov'}
+                />
+                <a
+                  href={siteUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1 px-3 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span>Book Now</span>
+                  <ExternalLink className="w-4 h-4" />
+                </a>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
@@ -188,6 +199,12 @@ export function CampsiteList({ campsites, onSiteView }: CampsiteListProps) {
                 </span>
               )}
             </div>
+
+            {/* User Ratings */}
+            <SiteRating
+              siteId={site.CampsiteID || `${index}`}
+              siteName={site.CampsiteName || 'Unnamed Site'}
+            />
           </div>
         );
       })}

@@ -20,6 +20,19 @@ const SUPABASE_PROJECT_ID = 'fsrxwrjvjkmywnvlpecn';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzcnh3cmp2amtteXdudmxwZWNuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MzE5NjI3NTAsImV4cCI6MjA0NzUzODc1MH0.YsRX-OefD5CAr8VfK6nU-O_SljpP7lOkUR-ejkbuZXo';
 const CRON_SECRET = 'campfinder-cron-2024';
 
+// *** IMPORTANT: Replace this with your actual deployed site URL ***
+// Example: 'https://your-site.netlify.app' or 'https://your-site.vercel.app'
+const YOUR_SITE_URL = 'https://YOUR-SITE-URL-HERE.com';
+
+// Validate that the user has set their site URL
+if (YOUR_SITE_URL === 'https://YOUR-SITE-URL-HERE.com') {
+  console.error('❌ Error: Please edit this file and set YOUR_SITE_URL to your actual site URL!');
+  console.log('');
+  console.log('Example: const YOUR_SITE_URL = "https://my-campsite-finder.netlify.app";');
+  console.log('');
+  process.exit(1);
+}
+
 // Get API key from command line
 const apiKey = process.argv[2];
 
@@ -41,7 +54,7 @@ if (!apiKey) {
 const jobs = [
   {
     title: 'Campsite Morning Snapshot (8am PT)',
-    url: `https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/make-server-908ab15a/cron/snapshot`,
+    url: `${YOUR_SITE_URL}/cron-proxy.html?secret=${CRON_SECRET}`,
     schedule: {
       timezone: 'America/Los_Angeles',
       hours: [8],
@@ -51,7 +64,7 @@ const jobs = [
   },
   {
     title: 'Campsite Noon Snapshot (12pm PT)',
-    url: `https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/make-server-908ab15a/cron/snapshot`,
+    url: `${YOUR_SITE_URL}/cron-proxy.html?secret=${CRON_SECRET}`,
     schedule: {
       timezone: 'America/Los_Angeles',
       hours: [12],
@@ -61,7 +74,7 @@ const jobs = [
   },
   {
     title: 'Campsite Evening Snapshot (8pm PT)',
-    url: `https://${SUPABASE_PROJECT_ID}.supabase.co/functions/v1/make-server-908ab15a/cron/snapshot`,
+    url: `${YOUR_SITE_URL}/cron-proxy.html?secret=${CRON_SECRET}`,
     schedule: {
       timezone: 'America/Los_Angeles',
       hours: [20],
@@ -72,14 +85,11 @@ const jobs = [
 ];
 
 async function createCronJob(job) {
-  // Add secret to URL directly during creation
-  const urlWithSecret = `${job.url}?secret=${encodeURIComponent(CRON_SECRET)}`;
-  
   const payload = {
     job: {
       title: job.title,
       enabled: true,
-      url: urlWithSecret,
+      url: job.url,
       schedule: {
         timezone: job.schedule.timezone,
         hours: job.schedule.hours,
@@ -99,7 +109,7 @@ async function createCronJob(job) {
 
   try {
     console.log(`\nAttempting to create: ${job.title}`);
-    console.log(`   URL: ${urlWithSecret}`);
+    console.log(`   URL: ${job.url}`);
     console.log(`   With Authorization header included`);
     
     const response = await fetch(CRON_JOB_API, {

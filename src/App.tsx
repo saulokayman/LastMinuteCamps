@@ -7,6 +7,14 @@ import { FeaturedParks } from './components/FeaturedParks';
 import { CampsiteMap } from './components/CampsiteMap';
 import { AdUnit } from './components/AdUnit';
 import { ApiTest } from './components/ApiTest';
+import { ApiDebugger } from './components/ApiDebugger';
+import { UserAuth } from './components/UserAuth';
+import { UserFavorites } from './components/UserFavorites';
+import { UserAlerts } from './components/UserAlerts';
+import { UserRatings } from './components/UserRatings';
+import { UserSettings } from './components/UserSettings';
+import { AdminPanel } from './components/AdminPanel';
+import { PromoteAdmin } from './components/PromoteAdmin';
 import { projectId, publicAnonKey } from './utils/supabase/info';
 
 export interface Campsite {
@@ -54,6 +62,7 @@ export interface SearchFilters {
 }
 
 export default function App() {
+  const [currentPath, setCurrentPath] = useState(window.location.pathname);
   const [campsites, setCampsites] = useState<Campsite[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,11 +75,23 @@ export default function App() {
     endDate: '',
   });
 
-  // Detect user location on mount
+  // Listen for URL changes
   useEffect(() => {
-    detectUserLocation();
-    trackPageView();
+    const handleLocationChange = () => {
+      setCurrentPath(window.location.pathname);
+    };
+
+    window.addEventListener('popstate', handleLocationChange);
+    return () => window.removeEventListener('popstate', handleLocationChange);
   }, []);
+
+  // Detect user location on mount (only for homepage)
+  useEffect(() => {
+    if (currentPath === '/') {
+      detectUserLocation();
+      trackPageView();
+    }
+  }, [currentPath]);
 
   const trackPageView = async () => {
     try {
@@ -184,13 +205,38 @@ export default function App() {
     }
   };
 
+  // Route handling - render different pages based on path
+  if (currentPath === '/favorites') {
+    return <UserFavorites />;
+  }
+  if (currentPath === '/alerts') {
+    return <UserAlerts />;
+  }
+  if (currentPath === '/ratings') {
+    return <UserRatings />;
+  }
+  if (currentPath === '/settings') {
+    return <UserSettings />;
+  }
+  if (currentPath === '/admin') {
+    return <AdminPanel />;
+  }
+  if (currentPath === '/promote-admin') {
+    return <PromoteAdmin />;
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-green-700 text-white shadow-lg">
         <div className="max-w-7xl mx-auto px-4 py-6">
-          <h1 className="text-white">CampFinder</h1>
-          <p className="text-green-100">Find and book your perfect campsite</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-white">CampFinder</h1>
+              <p className="text-green-100">Find and book your perfect campsite</p>
+            </div>
+            <UserAuth />
+          </div>
         </div>
       </header>
 
@@ -201,6 +247,11 @@ export default function App() {
         {/* API Connection Test */}
         <div className="mb-8">
           <ApiTest />
+        </div>
+
+        {/* API Debugger */}
+        <div className="mb-8">
+          <ApiDebugger />
         </div>
 
         {/* Search Filters */}
