@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Clock, CheckCircle, XCircle, RefreshCw, Calendar } from 'lucide-react';
-import { projectId } from '../../utils/supabase/info';
+import { projectId, publicAnonKey } from '../../utils/supabase/info';
 
 interface SnapshotStatusProps {
   accessToken: string;
@@ -69,10 +69,10 @@ export function SnapshotStatus({ accessToken }: SnapshotStatusProps) {
     setTesting(true);
     try {
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/cron/snapshot`,
+        `https://${projectId}.supabase.co/functions/v1/make-server-908ab15a/cron/snapshot?secret=campfinder-cron-2024`,
         {
           headers: {
-            'X-Cron-Secret': 'campfinder-cron-2024',
+            'Authorization': `Bearer ${publicAnonKey}`,
           },
         }
       );

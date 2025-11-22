@@ -826,11 +826,23 @@ app.post('/make-server-908ab15a/take-snapshot', async (c) => {
 // Call this endpoint 3 times daily: 8am, 12pm, 8pm Pacific Time
 app.get('/make-server-908ab15a/cron/snapshot', async (c) => {
   try {
-    // Verify this is from a cron service (you can add authentication here)
-    const cronSecret = c.req.header('X-Cron-Secret');
+    // Verify this is from a cron service - accept secret from header OR query param
+    const cronSecretHeader = c.req.header('X-Cron-Secret');
+    const cronSecretQuery = c.req.query('secret');
+    const cronSecret = cronSecretHeader || cronSecretQuery;
     const expectedSecret = Deno.env.get('CRON_SECRET') || 'campfinder-cron-2024';
     
+    // Debug logging
+    console.log('=== CRON AUTH DEBUG ===');
+    console.log('Header secret:', cronSecretHeader ? '[PRESENT]' : '[MISSING]');
+    console.log('Query secret:', cronSecretQuery ? '[PRESENT]' : '[MISSING]');
+    console.log('Received secret:', cronSecret ? '[PRESENT]' : '[MISSING]');
+    console.log('Expected secret:', expectedSecret ? '[PRESENT]' : '[MISSING]');
+    console.log('Match:', cronSecret === expectedSecret);
+    console.log('======================');
+    
     if (cronSecret !== expectedSecret) {
+      console.log('Auth failed: secret mismatch');
       return c.json({ error: 'Unauthorized' }, 401);
     }
 
